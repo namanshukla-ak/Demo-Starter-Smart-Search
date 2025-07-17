@@ -1,0 +1,114 @@
+version: '3.8'
+
+services:
+  # Development - runs both frontend and backend together
+  neurologix-dev:
+    build:
+      context: .
+      target: development
+    ports:
+      - "8000:8000"  # Backend API
+      - "8501:8501"  # Frontend Streamlit
+    environment:
+      - DEBUG=true
+      - API_BASE_URL=http://localhost:8000
+    volumes:
+      - .:/app
+      - ./logs:/app/logs
+    env_file:
+      - .env
+    restart: unless-stopped
+    profiles:
+      - dev
+
+  # Backend only
+  neurologix-backend:
+    build:
+      context: .
+      target: backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG=true
+    volumes:
+      - ./backend:/app/backend
+      - ./config:/app/config
+      - ./logs:/app/logs
+    env_file:
+      - .env
+    restart: unless-stopped
+    profiles:
+      - backend
+
+  # Frontend only  
+  neurologix-frontend:
+    build:
+      context: .
+      target: frontend
+    ports:
+      - "8501:8501"
+    environment:
+      - API_BASE_URL=http://neurologix-backend:8000
+    volumes:
+      - ./frontend.py:/app/frontend.py
+      - ./logs:/app/logs
+    env_file:
+      - .env
+    depends_on:
+      - neurologix-backend
+    restart: unless-stopped
+    profiles:
+      - frontend
+
+  # Production - optimized for production deployment
+  neurologix-prod:
+    build:
+      context: .
+      target: production
+    ports:
+      - "8000:8000"
+      - "8501:8501"
+    environment:
+      - DEBUG=false
+      - TESTING=false
+    env_file:
+      - .env
+    restart: unless-stopped
+    profiles:
+      - prod
+
+  # MySQL Database (optional - for local development)
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-neurologix123}
+      MYSQL_DATABASE: ${DB_NAME:-neurologix_db}
+      MYSQL_USER: ${DB_USER:-neurologix_user}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-neurologix123}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./data/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    restart: unless-stopped
+    profiles:
+      - db
+      - dev
+      - full
+
+  # Redis (optional - for caching)
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    profiles:
+      - cache
+      - full
+
+volumes:
+  mysql_data:
+
+networks:
+  default:
+    name: neurologix-network
