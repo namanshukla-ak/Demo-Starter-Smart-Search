@@ -1,0 +1,189 @@
+name: PR Quality Check
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+    types: [opened, synchronize, reopened]
+
+jobs:
+  quality-check:
+    name: Code Quality Check
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Fetch full history for better analysis
+        
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.11"
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install flake8 black isort mypy pytest pytest-cov
+        
+    - name: Run linting checks
+      run: |
+        echo "Running flake8..."
+        flake8 backend/ --max-line-length=88 --extend-ignore=E203,W503 --statistics
+        
+        echo "Checking code formatting with black..."
+        black --check --diff backend/
+        
+        echo "Checking import sorting..."
+        isort --check-only --diff backend/
+        
+    - name: Run type checking
+      run: |
+        echo "Running mypy type checking..."
+        mypy backend/ --ignore-missing-imports
+        
+    - name: Run tests with coverage
+      run: |
+        echo "Running test suite..."
+        ./run_tests.sh -t unit -v --coverage
+        
+    - name: Check test coverage
+      run: |
+        echo "Checking test coverage..."
+        coverage report --fail-under=80
+        
+    - name: Analyze code complexity
+      run: |
+        pip install radon
+        echo "Checking cyclomatic complexity..."
+        radon cc backend/ --min B
+        
+    - name: Check for security issues
+      run: |
+        pip install bandit safety
+        echo "Running security checks..."
+        bandit -r backend/ -ll
+        safety check --json
+        
+    - name: Comment PR with results
+      if: always()
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          
+          // Read coverage report if it exists
+          let coverageReport = '';
+          try {
+            coverageReport = fs.readFileSync('coverage.txt', 'utf8');
+          } catch (error) {
+            coverageReport = 'Coverage report not found';
+          }
+          
+          const comment = `
+          ## 🔍 Code Quality Report
+          
+          ### ✅ Checks Completed:
+          - Code formatting (black)
+          - Import sorting (isort)
+          - Linting (flake8)
+          - Type checking (mypy)
+          - Security scan (bandit)
+          - Test coverage
+          - Code complexity (radon)
+          
+          ### 📊 Test Coverage:
+          \`\`\`
+          ${coverageReport}
+          \`\`\`
+          
+          ### 💡 Next Steps:
+          - Ensure all checks pass before merging
+          - Address any security or complexity issues
+          - Maintain test coverage above 80%
+          `;
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment
+          });
+
+  # Branch naming check
+  branch-naming:
+    name: Check Branch Naming
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Check branch naming convention
+      run: |
+        BRANCH_NAME="${{ github.head_ref }}"
+        echo "Checking branch name: $BRANCH_NAME"
+        
+        if [[ $BRANCH_NAME =~ ^(feature|hotfix|release)\/[a-z0-9-]+$ ]]; then
+          echo "✅ Branch name follows convention"
+        else
+          echo "❌ Branch name does not follow convention"
+          echo "Expected format: feature/name, hotfix/name, or release/name"
+          echo "Use lowercase and hyphens only"
+          exit 1
+        fi
+
+  # Commit message check
+  commit-messages:
+    name: Check Commit Messages
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    - name: Check commit messages
+      run: |
+        echo "Checking commit message format..."
+        
+        # Get commits in this PR
+        git log --format="%s" origin/${{ github.base_ref }}..HEAD | while read commit_msg; do
+          echo "Checking: $commit_msg"
+          
+          if [[ $commit_msg =~ ^(feat|fix|docs|style|refactor|test|chore)(\(.+\))?: .{1,50} ]]; then
+            echo "✅ Valid: $commit_msg"
+          else
+            echo "❌ Invalid: $commit_msg"
+            echo "Expected format: type(scope): description"
+            echo "Types: feat, fix, docs, style, refactor, test, chore"
+            exit 1
+          fi
+        done
+
+  # Size check
+  pr-size:
+    name: Check PR Size
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    - name: Check PR size
+      run: |
+        FILES_CHANGED=$(git diff --name-only origin/${{ github.base_ref }}..HEAD | wc -l)
+        LINES_ADDED=$(git diff --stat origin/${{ github.base_ref }}..HEAD | tail -1 | grep -o '[0-9]\+ insertions' | grep -o '[0-9]\+' || echo 0)
+        
+        echo "Files changed: $FILES_CHANGED"
+        echo "Lines added: $LINES_ADDED"
+        
+        if [ $FILES_CHANGED -gt 20 ] || [ $LINES_ADDED -gt 500 ]; then
+          echo "⚠️ Large PR detected!"
+          echo "Consider breaking this into smaller PRs for easier review"
+          echo "Current: $FILES_CHANGED files, $LINES_ADDED lines"
+          echo "Recommended: <20 files, <500 lines"
+        else
+          echo "✅ PR size is reasonable"
+        fi
